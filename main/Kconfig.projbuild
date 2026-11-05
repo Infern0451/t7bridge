@@ -1,0 +1,69 @@
+menu "T7 Bridge"
+
+    config T7_TOKEN
+        string "Starting token (32 characters, optional)"
+        default ""
+        help
+            Leave empty: each bridge makes up its own token on first start and
+            keeps it. Only set this to reuse a token from an existing pairing.
+
+    config T7_CCU_ID
+        string "Starting CCU ID (14 characters, optional)"
+        default ""
+        help
+            Leave empty: the bridge reads it from the first Yamaha CCU it sees
+            (name YCCU_<ID>), or you type it on the setup page (S/N on the
+            CCU label). Used only on a board's first start.
+
+    config T7_PAIRING_CODE
+        string "Starting pairing code (6 characters, optional)"
+        default ""
+        help
+            Leave empty: the bridge learns it from the Y-Connect app (learn
+            mode) or you type it on the setup page. Used only on a board's
+            first start.
+
+    config T7_PLACEHOLDER_BATTERY
+        int "Battery level to report until the iPhone link exists (%)"
+        range 1 100
+        default 100
+        help
+            The TFT only enables its phone/media display once a non-zero
+            battery level is reported.
+
+    config T7_TEST_MEDIA
+        bool "Show a test track (HELLO FROM ESP) on the TFT"
+        default y
+
+    config T7_SUPERVISION_TIMEOUT_MS
+        int "CCU link supervision timeout (ms)"
+        range 1000 32000
+        default 5000
+        help
+            How long the link may be silent before it is considered lost.
+            5000 ms matches the Android app.
+
+    config T7_LOG_FRAME_HEX
+        bool "Log every frame in hex (verbose)"
+        default n
+
+    config T7_UPDATE_WIFI_PASSWORD
+        string "Password for the t7bridge-update Wi-Fi (8+ characters)"
+        default "t7bridge-update"
+        help
+            The update network only runs for a few minutes after you press
+            volume-down 5 times quickly. Change this if you publish builds.
+
+    config T7_UPDATE_WINDOW_MIN
+        int "Minutes the update Wi-Fi stays on"
+        range 1 60
+        default 10
+
+    config T7_UPDATE_AT_STARTUP_MIN
+        int "Also start the update Wi-Fi at power-on for this many minutes (0 = off)"
+        range 0 30
+        default 0
+        help
+            A recovery option if the handlebar trigger is not available.
+
+endmenu

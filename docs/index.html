@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>T7 Bridge Installer</title>
+<script type="module" src="https://unpkg.com/esp-web-tools@10.1.1/dist/web/install-button.js?module"></script>
+<style>
+  :root {
+    --bg: #f6f5f2; --fg: #1c1c1a; --muted: #5d5b55; --card: #ffffff;
+    --line: #dddad3; --accent: #c8102e; --accent-fg: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151514; --fg: #ecebe7; --muted: #a29f97; --card: #1f1f1d;
+      --line: #34332f; --accent: #e8394f; --accent-fg: #ffffff;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151514; --fg: #ecebe7; --muted: #a29f97; --card: #1f1f1d;
+    --line: #34332f; --accent: #e8394f; --accent-fg: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 40rem; margin: 0 auto; padding: 2.5rem 16px 4rem; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 .4rem; letter-spacing: -.01em; }
+  .lede { color: var(--muted); margin: 0 0 2rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 1.4rem 1.4rem 1.2rem; margin-bottom: 1.5rem;
+  }
+  ol { padding-left: 1.3rem; margin: .4rem 0 0; }
+  li { margin: .45rem 0; }
+  esp-web-install-button button, .install {
+    background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 8px;
+    font: 600 1.05rem/1 inherit; padding: .85rem 1.6rem; cursor: pointer; margin: .8rem 0 .4rem;
+  }
+  .warn { color: var(--muted); font-size: .95rem; }
+  a { color: var(--accent); }
+  code { font-size: .92em; }
+  footer { color: var(--muted); font-size: .85rem; margin-top: 2.5rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>T7 Bridge installer</h1>
+  <p class="lede">Puts the T7 Bridge firmware on an ESP32-S3 board (16&nbsp;MB flash) straight from this page.</p>
+
+  <div class="card">
+    <ol>
+      <li>Use <b>Chrome or Edge on a computer</b>. Safari, Firefox and phones can't talk to USB devices.</li>
+      <li>Plug the board in by its port labelled <b>USB</b>.</li>
+      <li>Click <b>Install</b>, pick the board from the list, and allow erasing it.</li>
+      <li>When it says it's done, tap the board's <b>RST</b> button.</li>
+    </ol>
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate" class="install">Install</button>
+      <span slot="unsupported" class="warn">This browser can't flash boards. Open this page in Chrome or Edge on a computer.</span>
+      <span slot="not-allowed" class="warn">This page must be opened over https.</span>
+    </esp-web-install-button>
+    <p class="warn">Board not in the list, or the install fails? Hold <b>BOOT</b>, tap <b>RST</b>, let go of BOOT, then click Install again. New boards often need this once.</p>
+  </div>
+
+  <div class="card">
+    <b>Next:</b> teach the bridge your bike and pair your iPhone. Follow
+    <a href="https://github.com/Infern0451/t7bridge#2-teach-it-your-bike-learn-mode">setup steps 2 and 3</a>.
+  </div>
+
+  <footer>
+    Open source (MIT). Not affiliated with or endorsed by Yamaha. Use at your own risk.
+    <a href="https://github.com/Infern0451/t7bridge">Source on GitHub</a>.
+  </footer>
+</main>
+</body>
+</html>
