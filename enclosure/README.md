@@ -16,20 +16,22 @@ your cable's thickness, not counting the strain relief:
 | `type1` | 5.0 mm | up to ~4.6 mm (most Anker, Belkin, Amazon Basics braided) |
 | `type2` | 6.5 mm | up to ~6 mm (heavy braided) |
 
-Print the base, lid and (optional) gasket of the **same** version. The lid is
-exported already turned over (top face down), ready to print: no mirroring
-needed.
+Each version is one **3MF** file (`print/t7bridge_case_type1.3mf` or
+`..._type2.3mf`) with the base, lid and gasket laid out on one plate, already
+in print orientation: open it in Orca / Bambu Studio / PrusaSlicer. The parts
+are separate objects, so you can give the gasket TPU or delete it if you use
+RTV instead.
 
 Port positions were measured on the project's N16R8 board: COM centre 9.2 mm
 and USB centre 21.0 mm from the left edge (components up, USB-C end towards
 you). For a different board, or to use the USB port instead, edit
 `PORT_OFFSETS` / run `python3 make_case.py --port usb`.
 
-| File | Print in | Orientation |
+| Part | Print in | Orientation (as exported) |
 |---|---|---|
-| `stl/t7bridge_base_<version>.stl` | PETG | open side up (as exported) |
-| `stl/t7bridge_lid_<version>.stl` | PETG | top face on the bed, lip up (as exported) |
-| `stl/t7bridge_gasket_<version>.stl` | TPU 95A (optional) | flat |
+| base | PETG | open side up |
+| lid | PETG | top face on the bed, lip up |
+| gasket | TPU 95A (optional) | flat |
 
 **Print settings (PETG):** 0.2 mm layers, **4 perimeters** (helps keep water
 out), 3 top/bottom layers or more, 25-40 % infill, no supports. The zip-tie
@@ -68,9 +70,9 @@ python3 make_case.py                      # type1 and type2 (COM port)
 python3 make_case.py --port usb --cable 1 # a USB-port version
 ```
 
-(Needs Python 3 and numpy.) It regenerates the STL files and checks they
-are watertight. The STLs are fine-meshed (base about 20 MB, lid about 14 MB)
-so the fillets come out smooth; raise `VOXEL` (e.g. to 0.4) for smaller files.
+(Needs Python 3 and numpy.) It regenerates the 3MF files and checks every
+part is watertight. Add `--stl` for separate STL files too (about 20 MB
+each, too big for GitHub's web upload, so they aren't in the repo).
 
 ## License
 
