@@ -26,8 +26,10 @@ fine grid (surface nets). Only needs Python 3 and numpy:
 
 Every dimension below is in millimetres and can be changed.
 """
+import argparse
 import struct
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -40,15 +42,25 @@ FIT = 0.5                # clearance around the board, each side
 
 PRESS_FIT = 0.2          # clearance for parts that slot together (printer-tuned)
 
-PLUG_BAY = 20.0          # room for a straight USB-C plug + strain relief
-CABLE_D = 4.4            # cable diameter + clearance (cable OD up to ~4.2 mm)
+PLUG_BAY = 26.0          # straight plug up to ~27 mm tip-to-strain-relief, 13 mm wide
+
+# Cable hole. Type 1: typical cables up to ~4.6 mm (Anker/Belkin/Amazon Basics
+# braided ~4.5 mm). Type 2: heavy cables up to ~6 mm.
+CABLE_TYPES = {1: 5.0, 2: 6.5}
+
+# USB-C port centres, measured from the board's centreline, in mm. Positive =
+# to the RIGHT when looking down at the board (components up) with its USB-C
+# end towards you. Measured on the project's N16R8 board (28.1 mm wide): COM
+# centre 9.2 mm and USB centre 21.0 mm from the left edge.
+PORT_OFFSETS = {"usb": 21.0 - 28.1 / 2, "com": 9.2 - 28.1 / 2}
+DEFAULT_PORT = "com"     # either port powers the board; the standard files use COM
 RIB_H = 1.0              # board sits on ribs this high
 PORT_ABOVE_PCB = 3.2     # USB-C centre above the PCB bottom
 
 FLOOR = 2.5
 WALL_IN, GROOVE_W, WALL_OUT = 1.2, 1.2, 1.2      # wall = inner + groove + outer
 GROOVE_D = 1.2
-CAVITY_H = 8.5           # inside height (fits board on ribs + plug overmold)
+CAVITY_H = 8.5           # inside height (plug overmold up to ~7.5 mm thick)
 LID_T = 3.0
 LIP_T, LIP_H = 1.2, 1.8
 FILLET = 1.5             # radius on all outside edges
@@ -71,10 +83,26 @@ OUT_W = CAV_W + 2 * WALL
 BASE_H = FLOOR + CAVITY_H
 TOTAL_H = BASE_H + LID_T
 CABLE_Z = FLOOR + RIB_H + PORT_ABOVE_PCB          # cable centre height
-NOTCH_Z0 = CABLE_Z - CABLE_D / 2                  # notch bottom
-NOTCH_Y0 = OUT_W / 2 - CABLE_D / 2
-NOTCH_Y1 = OUT_W / 2 + CABLE_D / 2
 END_X0 = OUT_L - WALL                             # end wall (cable side)
+PORT = "usb"
+CABLE_D = CABLE_TYPES[1]
+PORT_Y = OUT_W / 2
+
+
+def set_variant(port, cable_type):
+    """Place the cable hole in line with the chosen port, sized for the cable."""
+    global PORT, CABLE_D, PORT_Y, NOTCH_Z0, NOTCH_Y0, NOTCH_Y1
+    PORT = port
+    CABLE_D = CABLE_TYPES[cable_type]
+    PORT_Y = OUT_W / 2 + PORT_OFFSETS[port]
+    NOTCH_Z0 = CABLE_Z - CABLE_D / 2                  # notch bottom
+    NOTCH_Y0 = PORT_Y - CABLE_D / 2
+    NOTCH_Y1 = PORT_Y + CABLE_D / 2
+    if NOTCH_Y0 < WALL + FILLET or NOTCH_Y1 > OUT_W - WALL - FILLET:
+        raise SystemExit(f"cable hole for port '{port}' runs into the side wall: check PORT_OFFSETS")
+
+
+set_variant("usb", 1)
 BIG = 1000.0
 
 # ---------------------------------------------------------------- SDF helpers
@@ -129,10 +157,15 @@ def base_sdf(P):
     # ribs under the board
     ribs = [sdf_box(P, (x - 0.75, WALL - 0.1, FLOOR - 0.1), (x + 0.75, OUT_W - WALL + 0.1, FLOOR + RIB_H))
             for x in (WALL + 7, WALL + POCKET_L / 2, WALL + POCKET_L - 7)]
-    # stops at the USB end of the board (corners only, the plug passes between)
+    # stop at the USB end of the board, on the corner away from the plug
     px = WALL + POCKET_L
+    corners = []
+    if PORT_Y <= OUT_W / 2 + 0.5:
+        corners.append((OUT_W - WALL - 1.6, OUT_W - WALL + 0.1))
+    if PORT_Y >= OUT_W / 2 - 0.5:
+        corners.append((WALL - 0.1, WALL + 1.6))
     stops = [sdf_box(P, (px, y0, FLOOR - 0.1), (px + 1.5, y1, FLOOR + RIB_H + 3.0))
-             for y0, y1 in ((WALL - 0.1, WALL + 1.6), (OUT_W - WALL - 1.6, OUT_W - WALL + 0.1))]
+             for y0, y1 in corners]
     return union(d, *ribs, *stops)
 
 
@@ -257,9 +290,11 @@ def union_mesh(boxes):
 def write_stl(path, verts, tris, flip_z_at=None):
     v = verts.copy()
     t = tris.copy()
-    if flip_z_at is not None:                 # print the part upside down
+    if flip_z_at is not None:
+        # Print the part upside down: turn it over (rotate 180 degrees about
+        # the length axis). Flipping z alone would mirror it.
         v[:, 2] = flip_z_at - v[:, 2]
-        t = t[:, [0, 2, 1]]
+        v[:, 1] = OUT_W - v[:, 1]
     p = v[t]
     n = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
     n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-12
@@ -300,23 +335,85 @@ def gasket_boxes():
     ]
 
 
-def main(outdir):
-    outdir = Path(outdir)
+def turn_over(verts):
+    """Rotate 180 degrees about the length axis (for printing the lid top-down)."""
+    v = verts.copy()
+    v[:, 2] = TOTAL_H - v[:, 2]
+    v[:, 1] = OUT_W - v[:, 1]
+    return v
+
+
+def write_3mf(path, parts):
+    """parts: list of (name, verts, tris), already in print orientation.
+    Laid out side by side on one plate; each part stays a separate object so
+    the gasket can get its own filament."""
+    objs, items = [], []
+    gap = 8.0
+    for i, (name, v, t) in enumerate(parts, start=1):
+        v = v - v.min(axis=0)                      # sit on the bed at the origin
+        verts = "".join(f'<vertex x="{x:.3f}" y="{y:.3f}" z="{z:.3f}"/>' for x, y, z in v)
+        tris = "".join(f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in t)
+        objs.append(f'<object id="{i}" type="model" name="{name}"><mesh><vertices>{verts}'
+                    f'</vertices><triangles>{tris}</triangles></mesh></object>')
+        items.append(f'<item objectid="{i}" transform="1 0 0 0 1 0 0 0 1 0 {(i - 1) * (OUT_W + gap):.3f} 0"/>')
+    model = ('<?xml version="1.0" encoding="UTF-8"?>'
+             '<model unit="millimeter" xml:lang="en-US" '
+             'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+             f'<resources>{"".join(objs)}</resources><build>{"".join(items)}</build></model>')
+    types = ('<?xml version="1.0" encoding="UTF-8"?>'
+             '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+             '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+             '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>'
+             '</Types>')
+    rels = ('<?xml version="1.0" encoding="UTF-8"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Target="/3D/3dmodel.model" Id="rel0" '
+            'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>')
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        z.writestr("[Content_Types].xml", types)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("3D/3dmodel.model", model)
+
+
+def build_variant(outdir, port, cable_type, stl=False):
+    set_variant(port, cable_type)
+    tag = f"type{cable_type}" if port == DEFAULT_PORT else f"{port}_type{cable_type}"
+    print(f"[{tag}] cable hole {CABLE_D} mm, {PORT_OFFSETS[port]:+.1f} mm from centre")
+    ok = True
+    bv, bt = surface_nets(base_sdf, (0, 0, 0), (OUT_L, OUT_W, BASE_H), VOXEL)
+    ok &= check(bv, bt, "base")
+    lv, lt = surface_nets(lid_sdf, (0, 0, BASE_H - LIP_H), (OUT_L, OUT_W, TOTAL_H), VOXEL)
+    ok &= check(lv, lt, "lid")
+    gv, gt = union_mesh(gasket_boxes())
+    ok &= check(gv, gt, "gasket")
+    write_3mf(outdir / f"t7bridge_case_{tag}.3mf",
+              [("base", bv, bt), ("lid", turn_over(lv), lt), ("gasket (TPU, optional)", gv, gt)])
+    if stl:
+        write_stl(outdir / f"t7bridge_base_{tag}.stl", bv, bt)
+        write_stl(outdir / f"t7bridge_lid_{tag}.stl", lv, lt, flip_z_at=TOTAL_H)
+        write_stl(outdir / f"t7bridge_gasket_{tag}.stl", gv, gt)
+    return ok
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Generate the T7 Bridge case STLs.")
+    ap.add_argument("--port", choices=sorted(PORT_OFFSETS) + ["all"], default=DEFAULT_PORT,
+                    help=f"which USB-C port the cable plugs into (default: {DEFAULT_PORT})")
+    ap.add_argument("--cable", type=int, choices=sorted(CABLE_TYPES) + [0], default=0,
+                    help="1 = cables up to ~4.6 mm (5.0 mm hole), 2 = up to ~6 mm (6.5 mm hole), 0 = both")
+    ap.add_argument("--out", default=str(Path(__file__).parent / "print"))
+    ap.add_argument("--stl", action="store_true",
+                    help="also write separate STL files (large: ~20 MB each)")
+    a = ap.parse_args()
+    outdir = Path(a.out)
     outdir.mkdir(parents=True, exist_ok=True)
     print(f"Outside: {OUT_L:.1f} x {OUT_W:.1f} x {TOTAL_H:.1f} mm "
           f"(base {BASE_H:.1f} + lid {LID_T:.1f}), fillet {FILLET} mm")
-    ok = True
-    v, t = surface_nets(base_sdf, (0, 0, 0), (OUT_L, OUT_W, BASE_H), VOXEL)
-    ok &= check(v, t, "base")
-    write_stl(outdir / "t7bridge_base.stl", v, t)
-    v, t = surface_nets(lid_sdf, (0, 0, BASE_H - LIP_H), (OUT_L, OUT_W, TOTAL_H), VOXEL)
-    ok &= check(v, t, "lid")
-    write_stl(outdir / "t7bridge_lid.stl", v, t, flip_z_at=TOTAL_H)
-    v, t = union_mesh(gasket_boxes())
-    ok &= check(v, t, "gasket")
-    write_stl(outdir / "t7bridge_gasket.stl", v, t)
+    ports = sorted(PORT_OFFSETS) if a.port == "all" else [a.port]
+    cables = sorted(CABLE_TYPES) if a.cable == 0 else [a.cable]
+    ok = all([build_variant(outdir, p, c, a.stl) for p in ports for c in cables])
     return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).parent / "stl"))
+    sys.exit(main())
