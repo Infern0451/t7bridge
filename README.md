@@ -59,6 +59,18 @@ been tried. Please report results.
 
 ---
 
+### Tested by riders
+
+| Bike | iPhone | Board | Notes |
+|---|---|---|---|
+| 2025 Ténéré 700 | iPhone 17 Pro Max, iOS 27 | ESP32-S3 DevKitC N16R8 | Developer's bike |
+| 2026 Ténéré 700 | iPhone 14 Pro, iOS 27 | ESP32-S3 DevKitC | Flashed from scratch, no issues |
+
+Tried it on another bike or iPhone? Open an issue or comment on the Reddit
+thread and it'll be added here.
+
+---
+
 ## Setup
 
 ### 1. Flash the firmware
