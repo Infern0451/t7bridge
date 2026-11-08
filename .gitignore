@@ -1,0 +1,8 @@
+build/
+sdkconfig
+sdkconfig.old
+test/host/test_proto
+enclosure/__pycache__/
+*.pyc
+test/host/test_apple
+enclosure/stl/

@@ -22,6 +22,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -32,6 +33,13 @@ void learn_mode_register_gatt(void);   /* before the NimBLE host task starts */
 void learn_mode_on_sync(void);
 void learn_mode_tick(int64_t now_ms);  /* bridge task */
 bool learn_mode_active(void);
+
+/* Recent learn-mode events as text lines, for the setup page. */
+size_t learn_mode_events(char *buf, size_t cap);
+
+/* Option: ask the phone to pair over Bluetooth when the app connects. */
+bool learn_mode_pair_request(void);
+void learn_mode_set_pair_request(bool on);
 
 /* Forget the bike and every Bluetooth pairing, then restart. */
 void learn_mode_factory_reset(void);

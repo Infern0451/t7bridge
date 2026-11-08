@@ -127,6 +127,22 @@ static esp_err_t page_get(httpd_req_t *req)
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr_chunk(req, PAGE_HEAD);
     httpd_resp_sendstr_chunk(req, info);
+    if (!creds_have_code()) {
+        static char evbuf[24 * 100];
+        learn_mode_events(evbuf, sizeof evbuf);
+        httpd_resp_sendstr_chunk(req, "<h1>Learn mode activity</h1><pre style='white-space:pre-wrap;"
+                                      "font-size:.85em'>");
+        httpd_resp_sendstr_chunk(req, evbuf[0] ? evbuf : "(nothing yet)\n");
+        httpd_resp_sendstr_chunk(req, "</pre><p>Reload this page after each try. If Y-Connect "
+                                      "fails, send a screenshot of this list.</p>");
+        httpd_resp_sendstr_chunk(req, learn_mode_pair_request()
+            ? "<form method='post' action='/pairopt'><input type='hidden' name='on' value='0'>"
+              "<p>Ask the phone to pair over Bluetooth: <b>ON</b></p><button>Turn off</button></form>"
+            : "<form method='post' action='/pairopt'><input type='hidden' name='on' value='1'>"
+              "<p>Ask the phone to pair over Bluetooth: <b>off</b>. If Y-Connect says it failed "
+              "to pair, turn this on and try again (tap Pair if iOS asks).</p>"
+              "<button>Turn on</button></form>");
+    }
     httpd_resp_sendstr_chunk(req, PAGE_TAIL);
     return httpd_resp_sendstr_chunk(req, NULL);
 }
@@ -192,6 +208,22 @@ static esp_err_t setup_post(httpd_req_t *req)
         strcat(msg, "Pairing code saved: the bridge will now pair with your bike.");
     }
     return reply_page(req, msg[0] ? msg : "Nothing to save.");
+}
+
+static esp_err_t pairopt_post(httpd_req_t *req)
+{
+    char body[32] = {0};
+    int n = req->content_len < sizeof body - 1 ? (int)req->content_len : (int)sizeof body - 1;
+    if (n > 0 && httpd_req_recv(req, body, n) <= 0) {
+        return reply_page(req, "Nothing received. Try again.");
+    }
+    char on[4] = "";
+    httpd_query_key_value(body, "on", on, sizeof on);
+    learn_mode_set_pair_request(on[0] == '1');
+    return reply_page(req, on[0] == '1'
+        ? "The bridge will now ask the phone to pair when Y-Connect connects. Try pairing in "
+          "Y-Connect again and tap Pair if iOS asks."
+        : "Pairing request turned off.");
 }
 
 static esp_err_t forget_post(httpd_req_t *req)
@@ -362,6 +394,8 @@ void ota_update_start(void)
     static const httpd_uri_t forget = {.uri = "/forget", .method = HTTP_POST, .handler = forget_post};
     httpd_register_uri_handler(s_server, &setup);
     httpd_register_uri_handler(s_server, &forget);
+    static const httpd_uri_t pairopt = {.uri = "/pairopt", .method = HTTP_POST, .handler = pairopt_post};
+    httpd_register_uri_handler(s_server, &pairopt);
 
     s_active = true;
     s_stop_at_ms = now_ms() + (int64_t)CONFIG_T7_UPDATE_WINDOW_MIN * 60 * 1000;

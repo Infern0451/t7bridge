@@ -3,6 +3,7 @@
  */
 #include "learn_mode.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -13,6 +14,7 @@
 #include "freertos/task.h"
 #include "host/ble_hs.h"
 #include "host/ble_store.h"
+#include "nvs.h"
 #include "services/gap/ble_svc_gap.h"
 
 #include "creds.h"
@@ -51,6 +53,75 @@ static int64_t now_ms(void)
     return (int64_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
+/* Recent learn-mode events, shown on the setup page (no computer needed). */
+#define EV_LINES 24
+#define EV_LEN   96
+static char s_ev[EV_LINES][EV_LEN];
+static int s_ev_next, s_ev_count;
+static portMUX_TYPE s_ev_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void ev(const char *fmt, ...)
+{
+    char line[EV_LEN];
+    int64_t t = now_ms();
+    int n = snprintf(line, sizeof line, "%3d:%02d  ", (int)(t / 60000), (int)(t / 1000 % 60));
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line + n, sizeof line - n, fmt, ap);
+    va_end(ap);
+    ESP_LOGI(TAG, "%s", line + n);
+    portENTER_CRITICAL(&s_ev_mux);
+    memcpy(s_ev[s_ev_next], line, EV_LEN);
+    s_ev_next = (s_ev_next + 1) % EV_LINES;
+    if (s_ev_count < EV_LINES) {
+        s_ev_count++;
+    }
+    portEXIT_CRITICAL(&s_ev_mux);
+}
+
+size_t learn_mode_events(char *buf, size_t cap)
+{
+    size_t used = 0;
+    buf[0] = 0;
+    portENTER_CRITICAL(&s_ev_mux);
+    int first = (s_ev_next - s_ev_count + EV_LINES) % EV_LINES;
+    for (int i = 0; i < s_ev_count && used + EV_LEN + 2 < cap; i++) {
+        used += snprintf(buf + used, cap - used, "%s\n", s_ev[(first + i) % EV_LINES]);
+    }
+    portEXIT_CRITICAL(&s_ev_mux);
+    return used;
+}
+
+/* Option: ask the phone to pair over Bluetooth when the app connects, like
+ * the real CCU does. Off by default (Y-Connect worked without it in tests). */
+static int s_pair_request = -1;
+
+bool learn_mode_pair_request(void)
+{
+    if (s_pair_request < 0) {
+        uint8_t v = 0;
+        nvs_handle_t h;
+        if (nvs_open("t7creds", NVS_READONLY, &h) == ESP_OK) {
+            nvs_get_u8(h, "lm_pair", &v);
+            nvs_close(h);
+        }
+        s_pair_request = v ? 1 : 0;
+    }
+    return s_pair_request == 1;
+}
+
+void learn_mode_set_pair_request(bool on)
+{
+    nvs_handle_t h;
+    if (nvs_open("t7creds", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "lm_pair", on ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    s_pair_request = on ? 1 : 0;
+    ev("option: ask the phone to pair = %s", on ? "ON" : "off");
+}
+
 bool learn_mode_active(void)
 {
     return s_running;
@@ -64,9 +135,9 @@ static void send_ack(uint16_t conn)
 {
     struct os_mbuf *om = ble_hs_mbuf_from_flat(YAM_ACK, YAM_LEN_ACK);
     if (om == NULL || ble_gatts_notify_custom(conn, s_tx_val, om) != 0) {
-        ESP_LOGW(TAG, "could not send the ACK to the app (code is saved anyway)");
+        ev("could not send the ACK to the app (code is saved anyway)");
     } else {
-        ESP_LOGI(TAG, "sent the CCU's ACK to the app");
+        ev("sent the CCU's ACK to the app");
     }
 }
 
@@ -74,17 +145,15 @@ static void handle_auth_frame(uint16_t conn, const uint8_t *f)
 {
     yam_auth_info_t info;
     if (!yam_parse_auth(f, YAM_LEN_AUTH, &info)) {
-        ESP_LOGW(TAG, "app sent a 0xAA frame with a bad checksum; ignored");
+        ev("app sent a session-init with a bad checksum; ignored");
         return;
     }
     if (info.mode == YAM_AUTH_RECONNECT) {
-        ESP_LOGW(TAG, "app sent the RECONNECT form: it thinks it is already paired. Waiting "
-                      "for the pairing form; if none comes, remove the bike in Y-Connect and "
-                      "pair it again.");
+        ev("app sent the RECONNECT form (it thinks it's already paired); "
+           "waiting for the pairing form");
         return;   /* no ACK: the app then sends the initial-pair form */
     }
-    ESP_LOGI(TAG, "app sent the PAIRING form: CCU ID %s, pairing code ******",
-             info.ccu_id);
+    ev("app sent the PAIRING form: CCU ID %s, code ******", info.ccu_id);
     if (strcmp(info.ccu_id, creds_ccu_id()) != 0) {
         ESP_LOGW(TAG, "the app's CCU ID differs from ours (%s); using the app's", creds_ccu_id());
         if (!creds_set_ccu_id(info.ccu_id)) {
@@ -100,7 +169,7 @@ static void handle_auth_frame(uint16_t conn, const uint8_t *f)
         ESP_LOGE(TAG, "app's pairing code is not valid; not saved");
         return;
     }
-    ESP_LOGI(TAG, "*** pairing code learned and saved (shown on the setup page) ***");
+    ev("*** pairing code learned and saved ***");
     send_ack(conn);
 }
 
@@ -122,7 +191,8 @@ static int rx_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
     }
     if (s_buf_len == 0 && (len == 0 || data[0] != 0xAA)) {
         if (s_other_writes++ < 20) {
-            ESP_LOGI(TAG, "app wrote %u bytes (not session-init):", len);
+            ev("app wrote %u bytes starting %02X%02X (not session-init)", len,
+               len > 0 ? data[0] : 0, len > 1 ? data[1] : 0);
             ESP_LOG_BUFFER_HEX(TAG, data, len);
         }
         return 0;
@@ -212,7 +282,7 @@ static void start_advertising(void)
         ESP_LOGE(TAG, "advertising start failed (rc %d)", rc);
         return;
     }
-    ESP_LOGI(TAG, "advertising as \"%s\": pair the bike in Y-Connect now", s_name);
+    ev("advertising as \"%s\": pair the bike in Y-Connect now", s_name);
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg)
@@ -228,17 +298,21 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_buf_len = 0;
         s_other_writes = 0;
         if (ble_gap_conn_find(s_conn, &desc) == 0) {
-            ESP_LOGI(TAG, "app connected (handle %u, from %02X:%02X:%02X:%02X:%02X:%02X)", s_conn,
+            ev("app connected (from %02X:%02X:%02X:%02X:%02X:%02X)",
                      desc.peer_ota_addr.val[5], desc.peer_ota_addr.val[4], desc.peer_ota_addr.val[3],
                      desc.peer_ota_addr.val[2], desc.peer_ota_addr.val[1], desc.peer_ota_addr.val[0]);
         }
-        /* No Bluetooth pairing here: the app sends the code without it, and a
-         * bond made under the CCU's name would only confuse iOS later, when the
-         * same phone pairs with "t7bridge" (same Bluetooth address). */
+        if (learn_mode_pair_request()) {
+            ev("asking the phone to pair (option on)");
+            ble_gap_security_initiate(s_conn);
+        }
+        /* By default no Bluetooth pairing: Y-Connect sent the code without it
+         * in tests. Some app versions / first-time registrations may want it,
+         * hence the option on the setup page. */
         return 0;
 
     case BLE_GAP_EVENT_ENC_CHANGE:
-        ESP_LOGI(TAG, "app link encryption: %s (0x%x)",
+        ev("app link encryption: %s (0x%x)",
                  event->enc_change.status == 0 ? "on" : "failed", event->enc_change.status);
         return 0;
 
@@ -249,16 +323,16 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         return BLE_GAP_REPEAT_PAIRING_RETRY;
 
     case BLE_GAP_EVENT_SUBSCRIBE:
-        ESP_LOGI(TAG, "app %s notifications on handle %u",
+        ev("app %s notifications on handle %u",
                  event->subscribe.cur_notify ? "enabled" : "disabled", event->subscribe.attr_handle);
         return 0;
 
     case BLE_GAP_EVENT_MTU:
-        ESP_LOGI(TAG, "app MTU %u", event->mtu.value);
+        ev("app MTU %u", event->mtu.value);
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGW(TAG, "app disconnected (reason 0x%x)", event->disconnect.reason);
+        ev("app disconnected (reason 0x%x)", event->disconnect.reason);
         s_conn = BLE_HS_CONN_HANDLE_NONE;
         start_advertising();
         return 0;
