@@ -92,6 +92,135 @@ size_t learn_mode_events(char *buf, size_t cap)
     return used;
 }
 
+/* ---------------------------------------------------------------------- */
+/* The real CCU's advertising, recorded so learn mode can replay it exactly. */
+/* Newer CCUs advertise more than their name (e.g. an Apple notification    */
+/* service solicitation), and some Y-Connect versions check for it.         */
+/* ---------------------------------------------------------------------- */
+
+#define ADV_MAX 31
+static uint8_t s_cap_adv[ADV_MAX], s_cap_rsp[ADV_MAX];
+static uint8_t s_cap_adv_len, s_cap_rsp_len;
+static bool s_cap_loaded, s_cap_complete, s_cap_dirty;
+static int64_t s_cap_adv_at;
+
+static void hex(char *out, size_t cap, const uint8_t *d, size_t n)
+{
+    size_t o = 0;
+    for (size_t i = 0; i < n && o + 3 <= cap; i++) {
+        o += snprintf(out + o, cap - o, "%02X", d[i]);
+    }
+    if (o == 0 && cap > 0) {
+        out[0] = 0;
+    }
+}
+
+static void cap_load(void)
+{
+    if (s_cap_loaded) {
+        return;
+    }
+    s_cap_loaded = true;
+    nvs_handle_t h;
+    if (nvs_open("t7creds", NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    size_t a = ADV_MAX, r = ADV_MAX;
+    if (nvs_get_blob(h, "ccu_adv", s_cap_adv, &a) == ESP_OK && a > 0) {
+        s_cap_adv_len = (uint8_t)a;
+        if (nvs_get_blob(h, "ccu_rsp", s_cap_rsp, &r) == ESP_OK) {
+            s_cap_rsp_len = (uint8_t)r;
+        }
+        s_cap_complete = true;
+    }
+    nvs_close(h);
+}
+
+static void cap_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("t7creds", NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    nvs_set_blob(h, "ccu_adv", s_cap_adv, s_cap_adv_len);
+    if (s_cap_rsp_len) {
+        nvs_set_blob(h, "ccu_rsp", s_cap_rsp, s_cap_rsp_len);
+    } else {
+        nvs_erase_key(h, "ccu_rsp");
+    }
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void cap_finish(void)
+{
+    char hx[2 * ADV_MAX + 1];
+    s_cap_complete = true;
+    s_cap_dirty = true;
+    cap_save();
+    hex(hx, sizeof hx, s_cap_adv, s_cap_adv_len);
+    ev("recorded the bike's advertising: %s", hx);
+    if (s_cap_rsp_len) {
+        hex(hx, sizeof hx, s_cap_rsp, s_cap_rsp_len);
+        ev("recorded the bike's scan response: %s", hx);
+    } else {
+        ev("the bike sent no scan response");
+    }
+}
+
+void learn_mode_capture(const uint8_t *data, uint8_t len, bool scan_rsp)
+{
+    cap_load();
+    if (len > ADV_MAX) {
+        len = ADV_MAX;
+    }
+    if (!scan_rsp) {
+        if (s_cap_complete && len == s_cap_adv_len && memcmp(data, s_cap_adv, len) == 0) {
+            return;                       /* nothing new */
+        }
+        memcpy(s_cap_adv, data, len);
+        s_cap_adv_len = len;
+        s_cap_rsp_len = 0;
+        s_cap_complete = false;
+        s_cap_adv_at = now_ms();          /* wait briefly for a scan response */
+    } else if (s_cap_adv_len && !s_cap_complete) {
+        memcpy(s_cap_rsp, data, len);
+        s_cap_rsp_len = len;
+        cap_finish();
+    }
+}
+
+bool learn_mode_capture_complete(void)
+{
+    cap_load();
+    if (!s_cap_complete && s_cap_adv_len && now_ms() - s_cap_adv_at > 3000) {
+        cap_finish();                     /* no scan response from this CCU */
+    }
+    return s_cap_complete;
+}
+
+/* True if the recording is of the CCU we're posing as. */
+static bool cap_usable(void)
+{
+    cap_load();
+    if (!s_cap_complete || !s_cap_adv_len) {
+        return false;
+    }
+    const char *id = creds_ccu_id();
+    size_t n = strlen(id);
+    for (size_t i = 0; i + n <= s_cap_adv_len; i++) {
+        if (memcmp(s_cap_adv + i, id, n) == 0) {
+            return true;
+        }
+    }
+    for (size_t i = 0; i + n <= s_cap_rsp_len; i++) {
+        if (memcmp(s_cap_rsp + i, id, n) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Option: ask the phone to pair over Bluetooth when the app connects, like
  * the real CCU does. Off by default (Y-Connect worked without it in tests). */
 static int s_pair_request = -1;
@@ -259,19 +388,36 @@ static void start_advertising(void)
     if (!s_running || s_conn != BLE_HS_CONN_HANDLE_NONE || ble_gap_adv_active()) {
         return;
     }
-    /* Same as the real CCU: flags + complete name, nothing else. */
-    struct ble_hs_adv_fields f = {0};
-    f.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    f.name = (const uint8_t *)s_name;
-    f.name_len = strlen(s_name);
-    f.name_is_complete = 1;
-    int rc = ble_gap_adv_set_fields(&f);
+    int rc;
+    bool replay = cap_usable();
+    if (replay) {
+        /* Exactly what the real CCU advertises. */
+        rc = ble_gap_adv_set_data(s_cap_adv, s_cap_adv_len);
+        if (rc == 0) {
+            rc = ble_gap_adv_rsp_set_data(s_cap_rsp, s_cap_rsp_len);
+        }
+    } else {
+        /* Not recorded yet: name, plus the Apple notification service
+         * solicitation newer CCUs put in their scan response. */
+        static const uint8_t rsp[] = {
+            0x11, 0x15,   /* 128-bit service solicitation: ANCS */
+            0xD0, 0x00, 0x2D, 0x12, 0x1E, 0x4B, 0x0F, 0xA4,
+            0x99, 0x4E, 0xCE, 0xB5, 0x31, 0xF4, 0x05, 0x79,
+        };
+        struct ble_hs_adv_fields f = {0};
+        f.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+        f.name = (const uint8_t *)s_name;
+        f.name_len = strlen(s_name);
+        f.name_is_complete = 1;
+        rc = ble_gap_adv_set_fields(&f);
+        if (rc == 0) {
+            rc = ble_gap_adv_rsp_set_data(rsp, sizeof rsp);
+        }
+    }
     if (rc != 0) {
         ESP_LOGE(TAG, "advertising data rejected (rc %d)", rc);
         return;
     }
-    struct ble_hs_adv_fields r = {0};
-    ble_gap_adv_rsp_set_fields(&r);
     struct ble_gap_adv_params p = {0};
     p.conn_mode = BLE_GAP_CONN_MODE_UND;
     p.disc_mode = BLE_GAP_DISC_MODE_GEN;
@@ -282,7 +428,8 @@ static void start_advertising(void)
         ESP_LOGE(TAG, "advertising start failed (rc %d)", rc);
         return;
     }
-    ev("advertising as \"%s\": pair the bike in Y-Connect now", s_name);
+    ev("advertising as \"%s\" (%s): pair the bike in Y-Connect now", s_name,
+       replay ? "exact copy of the bike" : "not recorded yet: ignition on near the bridge once");
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg)
@@ -397,6 +544,13 @@ void learn_mode_factory_reset(void)
 {
     ESP_LOGW(TAG, "factory reset: forgetting the bike and all Bluetooth pairings");
     creds_forget_bike();
+    nvs_handle_t h;
+    if (nvs_open("t7creds", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, "ccu_adv");
+        nvs_erase_key(h, "ccu_rsp");
+        nvs_commit(h);
+        nvs_close(h);
+    }
     ble_store_clear();
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
@@ -440,6 +594,14 @@ void learn_mode_tick(int64_t now)
         return;
     }
     bool needed = creds_have_ccu_id() && !creds_have_code();
+    if (s_running && s_cap_dirty && s_conn == BLE_HS_CONN_HANDLE_NONE) {
+        /* Just recorded the bike's advertising: switch to the exact copy. */
+        s_cap_dirty = false;
+        if (ble_gap_adv_active()) {
+            ble_gap_adv_stop();
+        }
+        start_advertising();
+    }
     if (needed && !s_running) {
         start();
     } else if (s_running && creds_have_code() &&

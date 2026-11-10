@@ -14,6 +14,7 @@
 #include "sdkconfig.h"
 
 #include "creds.h"
+#include "learn_mode.h"
 #include "yamaha_proto.h"
 
 static const char *TAG = "ccu";
@@ -50,6 +51,8 @@ static int64_t s_auth_started_ms;
 static bool s_initial_sent;
 static volatile bool s_auth_pending_send;   /* set by host task, sent by tick */
 static int s_initial_failures;              /* initial-pair attempts without ACK */
+static ble_addr_t s_cap_addr;               /* CCU whose advertising is being recorded */
+static bool s_cap_addr_set;
 
 static int gap_event(struct ble_gap_event *event, void *arg);
 static void start_discovery(void);
@@ -370,8 +373,15 @@ void ccu_link_tick(int64_t now)
     }
     switch (s_state) {
     case CCU_IDLE:
-        if (!parked() && now >= s_next_scan_ms) {
-            start_scan();
+        if (now >= s_next_scan_ms &&
+            (!parked() || !learn_mode_capture_complete())) {
+            start_scan();   /* parked: only to record the CCU's advertising */
+        }
+        break;
+    case CCU_SCANNING:
+        if (parked() && learn_mode_capture_complete()) {
+            ble_gap_disc_cancel();
+            set_state(CCU_IDLE);
         }
         break;
     case CCU_AUTHENTICATING:
@@ -440,8 +450,16 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISC: {
         struct ble_hs_adv_fields fields;
         char id[YAM_CCU_ID_LEN + 1];
-        if (s_state != CCU_SCANNING ||
-            ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data) != 0) {
+        if (s_state != CCU_SCANNING) {
+            return 0;
+        }
+        if (event->disc.event_type == BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP) {
+            if (s_cap_addr_set && ble_addr_cmp(&event->disc.addr, &s_cap_addr) == 0) {
+                learn_mode_capture(event->disc.data, event->disc.length_data, true);
+            }
+            return 0;
+        }
+        if (ble_hs_adv_parse_fields(&fields, event->disc.data, event->disc.length_data) != 0) {
             return 0;
         }
         if (fields.name != NULL && name_matches(fields.name, fields.name_len, id)) {
@@ -452,9 +470,11 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                 ESP_LOGI(TAG, "learned CCU ID %s", id);
             }
             if (!creds_have_code()) {
-                ble_gap_disc_cancel();
-                set_state(CCU_IDLE);
-                ESP_LOGW(TAG, "no pairing code yet: learn mode (see the setup page)");
+                /* Record its advertising (and scan response) exactly, so learn
+                 * mode can replay it; the tick stops scanning when done. */
+                s_cap_addr = event->disc.addr;
+                s_cap_addr_set = true;
+                learn_mode_capture(event->disc.data, event->disc.length_data, false);
                 return 0;
             }
             connect_to(&event->disc.addr);

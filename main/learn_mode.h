@@ -41,6 +41,11 @@ size_t learn_mode_events(char *buf, size_t cap);
 bool learn_mode_pair_request(void);
 void learn_mode_set_pair_request(bool on);
 
+/* From the CCU link while scanning without a pairing code: record the real
+ * CCU's advertising data / scan response so learn mode can replay it. */
+void learn_mode_capture(const uint8_t *data, uint8_t len, bool scan_rsp);
+bool learn_mode_capture_complete(void);
+
 /* Forget the bike and every Bluetooth pairing, then restart. */
 void learn_mode_factory_reset(void);
 
