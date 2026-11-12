@@ -103,6 +103,19 @@ static char s_pending_title[64];
 static char s_artist[YAM_TEXT_MAX], s_album[YAM_TEXT_MAX], s_title[YAM_TEXT_MAX];
 static bool s_playing;
 
+/* Battery: read after connecting, retried every 10 s until a value arrives,
+ * then refreshed every 5 minutes (a single failed read used to leave the
+ * placeholder level on the TFT for the whole ride). */
+#define BATT_RETRY_MS   10000
+#define BATT_REFRESH_MS 300000
+static bool s_batt_seen;
+static int64_t s_batt_next_read;
+
+/* Advertising: fast (20 ms) for 30 s after start-up or a disconnect, then
+ * 152.5 ms: the timing Apple recommends for accessories iOS should find and
+ * reconnect to quickly. */
+static int64_t s_adv_fast_until;
+
 static int gap_event(struct ble_gap_event *event, void *arg);
 static void start_advertising(void);
 
@@ -248,6 +261,7 @@ static void run_setup(void)
     /* Battery and clock: subscribe, then read the current value once. */
     op_enqueue(OP_WRITE, s_chr[CH_BATT].cccd, notify_on, 2, "subscribe battery");
     op_enqueue(OP_READ, s_chr[CH_BATT].val, NULL, 0, "read battery");
+    s_batt_next_read = now_ms() + BATT_RETRY_MS;
     op_enqueue(OP_WRITE, s_chr[CH_TIME].cccd, notify_on, 2, "subscribe current time");
     op_enqueue(OP_READ, s_chr[CH_TIME].val, NULL, 0, "read current time");
     s_ready = true;
@@ -413,6 +427,7 @@ static void handle_read_value(uint16_t handle, const uint8_t *data, size_t len)
     if (handle == s_chr[CH_BATT].val && len >= 1) {
         ESP_LOGI(TAG, "iPhone battery %u%%", data[0]);
         bridge_set_battery(data[0]);
+        s_batt_seen = true;
     } else if (handle == s_chr[CH_TIME].val) {
         cts_time_t t;
         if (cts_parse_current_time(data, len, &t)) {
@@ -474,6 +489,13 @@ void iphone_link_tick(int64_t now)
     lock();
     if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
         handle_call_output(call_tracker_tick(&s_calls, now_ms()), 0);
+        if (s_ready && s_chr[CH_BATT].val && now_ms() >= s_batt_next_read) {
+            if (!s_batt_seen) {
+                ESP_LOGI(TAG, "no battery level from the iPhone yet; asking again");
+            }
+            op_enqueue(OP_READ, s_chr[CH_BATT].val, NULL, 0, "read battery");
+            s_batt_next_read = now_ms() + (s_batt_seen ? BATT_REFRESH_MS : BATT_RETRY_MS);
+        }
     }
     unlock();
 }
@@ -525,6 +547,7 @@ void iphone_link_handle_controls(uint8_t events)
 static void reset_session(void)
 {
     s_ready = false;
+    s_batt_seen = false;
     s_q_head = s_q_count = 0;
     s_op_busy = false;
     bool in_call = s_calls.phase != CALLT_IDLE;
@@ -610,6 +633,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_conn = BLE_HS_CONN_HANDLE_NONE;
         unlock();
         bridge_phone_disconnected();
+        s_adv_fast_until = now_ms() + 30000;
         start_advertising();
         return 0;
 
@@ -672,9 +696,15 @@ static void start_advertising(void)
     struct ble_gap_adv_params p = {0};
     p.conn_mode = BLE_GAP_CONN_MODE_UND;
     p.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    p.itvl_min = 160;   /* 100 ms */
-    p.itvl_max = 240;   /* 150 ms */
-    rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &p, gap_event, NULL);
+    int64_t fast_left = s_adv_fast_until - now_ms();
+    int32_t duration = BLE_HS_FOREVER;
+    if (fast_left > 0) {
+        p.itvl_min = p.itvl_max = 32;    /* 20 ms */
+        duration = (int32_t)fast_left;   /* ADV_COMPLETE then restarts it slow */
+    } else {
+        p.itvl_min = p.itvl_max = 244;   /* 152.5 ms */
+    }
+    rc = ble_gap_adv_start(s_own_addr_type, NULL, duration, &p, gap_event, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "advertising start failed (rc %d)", rc);
         return;
@@ -694,5 +724,6 @@ void iphone_link_on_sync(void)
         ESP_LOGE(TAG, "no usable BLE address");
         return;
     }
+    s_adv_fast_until = now_ms() + 30000;
     start_advertising();
 }
