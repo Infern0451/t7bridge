@@ -7,9 +7,11 @@ tall). Outside size: **97.2 × 36.3 × 14.0 mm**, all outside edges rounded
 
 ## Pick your version
 
-The cable goes into the board's **COM** port (either port powers the board,
-and setup and updates happen over Bluetooth and Wi-Fi). Pick the version by
-your cable's thickness, not counting the strain relief:
+The cable goes into the board's **USB** port. On many of these boards only the
+USB port has the resistors that make USB-C chargers, power banks, laptops and
+the bike's own USB-C port switch their 5 V on; the COM port only powers up from
+USB-A cables and "dumb" 12 V converters. Pick the version by your cable's
+thickness, not counting the strain relief:
 
 | Version | Cable hole | For cables |
 |---|---|---|
@@ -29,8 +31,9 @@ shield and over the USB-C sockets) stop it lifting over that stop. The pads
 clear the board by 0.5 mm, so nothing is pressed on.
 
 On the project's N16R8 board the two USB-C ports are 11.8 mm apart and
-symmetric about the centreline; components up, COM is on the right. For a different board, or to use the USB port instead, edit
-`PORT_OFFSETS` / run `python3 make_case.py --port usb`.
+symmetric about the centreline; components up, USB is on the left. For a
+different board edit `PORT_OFFSETS`; for a COM-port case run
+`python3 make_case.py --port com`.
 
 | Part | Print in | Orientation (as exported) |
 |---|---|---|
@@ -57,7 +60,7 @@ channels on the bottom faces are short bridges that print fine.
 
 1. **Dry-fit first.** Put the board in (components up, antenna end against
    the far wall, USB end towards the notch), close the lid, check it seats.
-2. Plug the cable into the board's **COM** port and lay the cable in the notch.
+2. Plug the cable into the board's **USB** port and lay the cable in the notch.
 3. Fit the gasket in the groove, **or** run a thin bead of RTV in the groove.
    Add a dab of RTV around the cable where it passes through the notch.
 4. Press the lid on and fit two zip ties in the channels, snug, not crushing.
@@ -71,8 +74,8 @@ plug.
 All dimensions are at the top of `make_case.py`. Edit them and run:
 
 ```sh
-python3 make_case.py                      # type1 and type2 (COM port)
-python3 make_case.py --port usb --cable 1 # a USB-port version
+python3 make_case.py                      # type1 and type2 (USB port)
+python3 make_case.py --port com --cable 1 # a COM-port version
 ```
 
 (Needs Python 3 and numpy.) It regenerates the 3MF files and checks every

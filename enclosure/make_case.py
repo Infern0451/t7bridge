@@ -53,7 +53,7 @@ CABLE_TYPES = {1: 5.0, 2: 6.5}
 # end towards you. On the project's N16R8 board the two ports are 11.8 mm
 # apart and symmetric about the centreline; components up, COM is on the right.
 PORT_OFFSETS = {"usb": -5.9, "com": +5.9}
-DEFAULT_PORT = "com"     # either port powers the board; the standard files use COM
+DEFAULT_PORT = "usb"     # the USB port powers from any source (see README); COM may not
 RIB_H = 1.0              # board sits on ribs this high
 PORT_ABOVE_PCB = 3.2     # USB-C centre above the PCB bottom
 

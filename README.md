@@ -133,7 +133,10 @@ control.
 - Put the board in the [case](enclosure/) and mount it with VHB tape. Behind
   the TFT works well. Keep metal away from the board's antenna end (opposite
   the USB plug).
-- Connect power (below). The bridge starts when the bike does.
+- Connect power (below) to the board's **USB** port. On many of these boards
+  the COM port stays dark on USB-C chargers, power banks and the bike's USB-C
+  port (it lacks the resistors that tell them to switch on). The bridge starts
+  when the bike does.
 
 ---
 
